@@ -23,10 +23,11 @@ queue<Mat> motion_frames_queue;
 CascadeClassifier fullbody_cascade;
 
 atomic<bool> body_detected{false};
-atomic<bool> start_analysis{false};
+// atomic<bool> start_analysis{false};
 atomic<bool> start_body_detection{false};
 
 const int DETECTION_THRESHOLD = 2;
+const int MAX_MOTION_QUEUE_SIZE = DETECTION_THRESHOLD * 4;
 const double MIN_CONTOUR_AREA = 500;
 
 enum ButtonState {
@@ -63,7 +64,7 @@ void bodyDetection() {
         }
 
         printf("motion frame size: %d\n", motion_frames_queue.size());
-        Mat frame = motion_frames_queue.back();
+        Mat frame = motion_frames_queue.front();
         motion_frames_queue.pop();
         lock.unlock();
 
@@ -98,6 +99,9 @@ void bodyDetection() {
             consecutiveDetections = 0;
             
             this_thread::sleep_for(chrono::milliseconds(100));
+        }
+        if (finished) {
+            break;
         }
     }
 
@@ -146,11 +150,11 @@ void analysis() {
     int frameCounter = 0;  // Use a frame counter instead of a separate queue
 
     while (true) {
-        if (!start_analysis) {
-            if (finished) return;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            continue;
-        }
+        // if (!start_analysis) {
+        //     if (finished) return;
+        //     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        //     continue;
+        // }
         // We might be waiting on the condition variable for new frames to process.
         unique_lock<mutex> lock(frame_mutex);
         frame_cond.wait(lock, [] { return !frame_queue.empty() || finished; });
@@ -182,6 +186,10 @@ void analysis() {
                 motionFrames.pop();
                 // Here, you could choose to perform further operations on framesWithMotion
                 // For now, we just store them
+                if (motion_frames_queue.size() >= MAX_MOTION_QUEUE_SIZE){
+                    //clear the que
+                    clearQueue(motion_frames_queue);
+                }
                 motion_frames_queue.push(frameWithMotion);
             }
             motion_lock.unlock();
@@ -219,7 +227,7 @@ void captureVideo() {
     while (true) {
         capture.read(frame);
         unique_lock<mutex> lock(frame_mutex);
-        frame_queeu.push(frame.clone());
+        frame_queue.push(frame.clone());
         lock.unlock();
         frame_cond.notify_one();
         if (waitKey(1) >= 0)
@@ -263,6 +271,9 @@ void buttonThreadFunction() {
 
     while (true) {
         int buttonValue = returnButtonValue();
+        if (finished){
+            break;
+        }
         
         switch (buttonState) {
             case Idle:
@@ -271,7 +282,7 @@ void buttonThreadFunction() {
                     buttonPressedAgain = false;
                     
                     // Signal to start analysis and body detection
-                    start_analysis = true;
+                    // start_analysis = true;
                     start_body_detection = true;
                 }
                 break;
@@ -286,14 +297,21 @@ void buttonThreadFunction() {
                 // Flash LEDs and buzzer
                 
                 flashingRed(50000);
-                flashingBuzzer(50000);
+                if (body_detected.load()){
+                    //send an email?
+                    flashingBuzzer(50000);
+                    body_detected.store(false);
+                }
 
-                // Reset and stop analysis and detection when going back to idle state
+                 // Check if the button is pressed again to stop flashing
+                if (buttonValue == 1) {
+                    buttonPressedAgain = true;
+                }
+
+                // Check if the button is released to go back to Idle
                 if (buttonValue == 0 && buttonPressedAgain) {
                     buttonState = Idle;
-                    
-                    // Signal to stop analysis and body detection
-                    start_analysis = false;
+                    // start_analysis = false;
                     start_body_detection = false;
                 }
                 break;
@@ -302,6 +320,9 @@ void buttonThreadFunction() {
         // Include some delay to prevent a busy loop
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+    //cleanup
+    redOff();
+    buzzerOff();
 }
 
 int main() {
@@ -311,54 +332,18 @@ int main() {
     }
     
 
-   // Start hardware thread
-    thread hardware_thread(buttonThreadFunction);
+  
     // Start video capture thread
     thread capture_thread(captureVideo);
+     // Start hardware thread
+    thread display_thread(displayVideo);
+    thread hardware_thread(buttonThreadFunction);
     // Start analysis thread
     thread analysis_thread(analysis);
      // start body detection thread
     thread body_detection_thread(bodyDetection);
-    // Start display thread
-    thread display_thread(displayVideo);
+   
 
-//    while(true){
-//    int buttonValue = returnButtonValue();
-//         switch (buttonState) {
-//             case Idle:
-//                 if (buttonValue == 1) {
-//                     buttonState = ButtonPressed;
-//                     buttonPressedAgain = false;
-//                 }
-//                 break;
-
-//             case ButtonPressed:
-//                 if (buttonValue == 0) {
-//                     buttonState = Flashing;
-//                 }
-//                 break;
-
-//             case Flashing:
-//                 // Flash LEDs and buzzer
-//                 flashingRed(50000);
-//                 if (body_detected.load()){
-//                     flashingBuzzer(50000);
-//                     // sleep(5);
-//                     body_detected.store(false);
-//                 }
-
-//                 // Check if the button is pressed again to stop flashing
-//                 if (buttonValue == 1) {
-//                     buttonPressedAgain = true;
-//                 }
-
-//                 // Check if the button is released to go back to Idle
-//                 if (buttonValue == 0 && buttonPressedAgain) {
-//                     buttonState = Idle;
-//                 }
-//                 break;
-//         }
-//    }
 
     // Wait for threads to finish
     hardware_thread.join();
