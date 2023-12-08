@@ -7,7 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include "peripherals.hpp"
-
+#include <cstdio>
 using namespace cv;
 using namespace std;
 
@@ -30,6 +30,7 @@ atomic<bool> start_body_detection{false};
 const int DETECTION_THRESHOLD = 2;
 const int MAX_MOTION_QUEUE_SIZE = DETECTION_THRESHOLD * 4;
 const double MIN_CONTOUR_AREA = 500;
+string filename = "detected_person.jpg";
 
 enum ButtonState {
     Idle,
@@ -42,8 +43,17 @@ void clearQueue(queue<T>& q) {
     queue<T> empty;
     swap(q, empty);
 }
+void deleteDetectedPersonImage(const std::string& filename) {
+    // Check if the removal was successful
+    if (std::remove(filename.c_str()) != 0) {
+        std::perror("nothing to be deleted"); // Use perror to print the system's error message
+    } else {
+        std::cout << filename << " successfully deleted" << std::endl;
+    }
+}
 
 void bodyDetection() {
+    
     int consecutiveDetections = 0;
     namedWindow("Body Detected - Live", WINDOW_AUTOSIZE); // Create the body detection display window
 
@@ -95,6 +105,8 @@ void bodyDetection() {
             // while (!motion_frames_queue.empty()) {
             //     motion_frames_queue.pop();
             // }
+            
+            imwrite(filename, frame);
             clearQueue(motion_frames_queue);
             lock.unlock();
             consecutiveDetections = 0;
@@ -105,8 +117,9 @@ void bodyDetection() {
             break;
         }
     }
-
+    deleteDetectedPersonImage(filename);
     destroyWindow("Body Detected - Live"); // Destroy the window when finished
+
 }
 
 queue<Mat> detectMotion(queue<Mat>& frames) {
@@ -263,8 +276,20 @@ void displayVideo() {
     destroyWindow("Capture - Live");
 }
 
+void RunPythonScriptInBackground(const std::string& scriptPath) {
+    std::string command = "python3 " + scriptPath + " &";
+    int result = system(command.c_str()); // Execute the command
+
+    // Note: It's good practice to check the return value of system()
+    if (result != 0) {
+        cout << "error runing a python scrip!" << endl;
+        return;
+    }
+}
+
 void SendEmail() {
     // Your logic to send an email...
+      RunPythonScriptInBackground("pythonSender.py");
     std::cout << "Email sent at " << std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) << std::endl;
 }
 void TryToSendEmail() {
@@ -291,7 +316,7 @@ void TryToSendEmail() {
 void buttonThreadFunction() {
     exportAllGpioPin();
     openFiles();
-    cout << "starting! " << endl;
+    cout << "press the button to arm the system! " << endl;
     ButtonState buttonState = Idle;
     bool buttonPressedAgain = false;
 
@@ -353,18 +378,19 @@ void buttonThreadFunction() {
 }
 
 int main() {
+    cout << "initialization... please wait..." << endl;
     if (!fullbody_cascade.load("/home/pi/opencv/data/haarcascades/haarcascade_frontalface_alt.xml")) {
     cerr << "--(!)Error loading full body cascade\n";
     return -1;
     }
+    deleteDetectedPersonImage(filename);
     
 
-  
+   thread hardware_thread(buttonThreadFunction);
     // Start video capture thread
     thread capture_thread(captureVideo);
      // Start hardware thread
     thread display_thread(displayVideo);
-    thread hardware_thread(buttonThreadFunction);
     // Start analysis thread
     thread analysis_thread(analysis);
      // start body detection thread
