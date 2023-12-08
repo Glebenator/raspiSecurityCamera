@@ -5,6 +5,7 @@
 #include <queue>
 #include <condition_variable>
 #include <atomic>
+#include <chrono>
 #include "peripherals.hpp"
 
 using namespace cv;
@@ -262,6 +263,31 @@ void displayVideo() {
     destroyWindow("Capture - Live");
 }
 
+void SendEmail() {
+    // Your logic to send an email...
+    std::cout << "Email sent at " << std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) << std::endl;
+}
+void TryToSendEmail() {
+    // Static so the timestamp persists across function calls
+    static std::chrono::steady_clock::time_point lastSendTime = std::chrono::steady_clock::now() - std::chrono::minutes(1);
+
+    // Check current time
+    auto currentTime = std::chrono::steady_clock::now();
+
+    // Calculate time difference
+    auto timeDiff = std::chrono::duration_cast<std::chrono::minutes>(currentTime - lastSendTime);
+
+    // Check if one minute has passed
+    if (timeDiff >= std::chrono::minutes(1)) {
+        // Send the email
+        SendEmail();
+
+        // Update the time of the last email sent
+        lastSendTime = currentTime;
+    } else {
+        std::cout << "Less than a minute has passed since the last email. Email not sent." << std::endl;
+    }
+}
 void buttonThreadFunction() {
     exportAllGpioPin();
     openFiles();
@@ -299,6 +325,7 @@ void buttonThreadFunction() {
                 flashingRed(50000);
                 if (body_detected.load()){
                     //send an email?
+                    TryToSendEmail();
                     flashingBuzzer(50000);
                     body_detected.store(false);
                 }
