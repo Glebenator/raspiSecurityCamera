@@ -26,7 +26,7 @@ service = build('gmail', 'v1', credentials=creds)
 #     print(f'An error occurred: {error}')
 #     message = None
 
-def send_email(data):
+def send_email():
     # Check the received data and decide whether to send the email
     # Create a multipart message
     msg = MIMEMultipart('related')  # 'related' is used for inline images
@@ -66,39 +66,66 @@ def send_email(data):
     try:
         message = (service.users().messages().send(userId="me", body=create_message).execute())
         print(f'Sent message to {msg["to"]} Message Id: {message["id"]}')
+        try:
+            os.remove(image_path)
+            print(f"The image {image_path} has been deleted successfully.")
+        except FileNotFoundError:
+            print("The file was not found, and therefore not deleted.")
+        except PermissionError:
+            print("Permission denied: unable to delete the file.")
+        except Exception as e:
+            print(f"An error occurred: {e}")
     except HttpError as error:
         print(f'An error occurred: {error}')
         message = None
 
-        print("Email sent because of person detected alert!")
+    print("Email sent because of person detected alert!")
 
-# Socket creation function
-def start_server(host='localhost', port=65432):
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((host, port))
-    server.listen()
+shutdown_flag = False
 
-    print(f'Server listening on {host}:{port}...')
-
-    # Wait for client connections
-    while True:
-        client_socket, client_address = server.accept()
-        print(f"Connected to {client_address}")
-
-        # Handle client connection in separate thread
-        thread = threading.Thread(target=handle_client, args=(client_socket,))
-        thread.start()
-
-# Function to handle client connection
 def handle_client(client_socket):
+    global shutdown_flag
     with client_socket as sock:
-        data = sock.recv(1024)  # Buffer size
-        print(f"Received data: {data}")
+        while True:
+            try:
+                data = sock.recv(1024)
+                if not data:
+                    break
+                
+                message = data.decode('utf-8').strip()
+                print(f"Received data: {message}")
 
-        # Send email depending on the received data
-        if data.decode('utf-8') == '!!':
-            send_email(data)
+                if message == '!!':
+                    send_email()
+                elif message == '@@':
+                    print("Shutdown command received! Shutting down server.")
+                    shutdown_flag = True
+                    break
+                   
+            except ConnectionResetError:
+                print("Connection reset by client.")
+                break
+            except Exception as e:
+                print(e)
+                break
+
+def start_server(host='localhost', port=65432):
+    global shutdown_flag
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+        server.bind((host, port))
+        server.listen()
+
+        print(f'Server listening on {host}:{port}...')
+
+        # Wait for client connections
+        while not shutdown_flag:
+            client_socket, client_address = server.accept()
+            print(f"Connected to {client_address}")
+
+            # Handle client connection in separate thread
+            thread = threading.Thread(target=handle_client, args=(client_socket,))
+            thread.start()
+            thread.join()  # Wait for the thread to finish before possibly checking shutdown_flag
 
 if __name__ == '__main__':
-    # Start the server
     start_server()

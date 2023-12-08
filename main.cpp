@@ -168,13 +168,15 @@ void bodyDetection() {
                 consecutiveDetections = 0;
             }
         } else {
-            body_detected.store(true);
+            
             lock.lock();
+            
             // while (!motion_frames_queue.empty()) {
             //     motion_frames_queue.pop();
             // }
             
             imwrite(filename, frame);
+            body_detected.store(true);
             clearQueue(motion_frames_queue);
             lock.unlock();
             consecutiveDetections = 0;
@@ -316,6 +318,10 @@ void captureVideo() {
             break;
     }
     finished = true;
+    unique_lock<mutex> lock(message_mutex);
+    message_queue.push("@@");
+    lock.unlock();
+    message_cond.notify_one(); // Notify one waiting thread
     stopClientThread();
     frame_cond.notify_one();
 }
@@ -379,7 +385,7 @@ void TryToSendEmail() {
     if (timeDiff >= std::chrono::minutes(1)) {
         // Send the email
         SendEmail();
-
+        
         // Update the time of the last email sent
         lastSendTime = currentTime;
     } else {
