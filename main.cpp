@@ -8,6 +8,13 @@
 #include <chrono>
 #include "peripherals.hpp"
 #include <cstdio>
+#include <cstring>
+#include <cerrno>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 using namespace cv;
 using namespace std;
 
@@ -17,9 +24,12 @@ queue<Mat> frame_queue;
 bool finished = false;
 mutex processed_frame_mutex;
 mutex motion_frames_mutex;
+mutex message_mutex;
+condition_variable message_cond;
 condition_variable processed_frame_cond;
 queue<Mat> processed_frame_queue;
 queue<Mat> motion_frames_queue;
+queue<const char*> message_queue;
 
 CascadeClassifier fullbody_cascade;
 
@@ -42,6 +52,64 @@ template<typename T>
 void clearQueue(queue<T>& q) {
     queue<T> empty;
     swap(q, empty);
+}
+
+void stopClientThread() {
+    std::unique_lock<std::mutex> lock(message_mutex);
+    lock.unlock();
+    message_cond.notify_one(); // Notify one waiting thread
+}
+
+void clientThread() {
+    // Server details
+    const char* server_ip = "127.0.0.1";  // localhost
+    const int server_port = 65432;        // The same port as used by the server
+
+    // Create a socket
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == -1) {
+        std::cerr << "Could not create socket: " << std::strerror(errno) << std::endl;
+        return;
+    }
+
+    // Specify the server address
+    struct sockaddr_in server_addr;
+    std::memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(server_port);
+    inet_pton(AF_INET, server_ip, &server_addr.sin_addr);
+
+    // Connect to the server
+    if (connect(sock, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)) == -1) {
+        std::cerr << "Connect failed: " << std::strerror(errno) << std::endl;
+        close(sock); // Close the socket before exiting
+        return;
+    }
+
+    // Send the message
+    while(true) {
+        std::unique_lock<std::mutex> lock(message_mutex);
+        message_cond.wait(lock, []{return finished || !message_queue.empty();});
+
+        if (finished && message_queue.empty()) {
+            break;
+        }
+
+        const char* message = message_queue.front();
+        message_queue.pop();
+        lock.unlock();
+
+        if (send(sock, message, std::strlen(message), 0) == -1) {
+            std::cerr << "Send failed: " << std::strerror(errno) << std::endl;
+            close(sock); // Close the socket before exiting
+            return;
+        }
+
+        std::cout << "Message sent: " << message << std::endl;
+    }
+
+    // Close the socket
+    close(sock);
 }
 void deleteDetectedPersonImage(const std::string& filename) {
     // Check if the removal was successful
@@ -248,6 +316,7 @@ void captureVideo() {
             break;
     }
     finished = true;
+    stopClientThread();
     frame_cond.notify_one();
 }
 
@@ -289,7 +358,11 @@ void RunPythonScriptInBackground(const std::string& scriptPath) {
 
 void SendEmail() {
     // Your logic to send an email...
-      RunPythonScriptInBackground("pythonSender.py");
+    //   RunPythonScriptInBackground("pythonSender.py");
+    unique_lock<mutex> lock(message_mutex);
+    message_queue.push("!!");
+    lock.unlock();
+    message_cond.notify_one(); // Notify one waiting thread
     std::cout << "Email sent at " << std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) << std::endl;
 }
 void TryToSendEmail() {
@@ -387,6 +460,7 @@ int main() {
     
 
    thread hardware_thread(buttonThreadFunction);
+   thread client_Thread(clientThread);
     // Start video capture thread
     thread capture_thread(captureVideo);
      // Start hardware thread
@@ -397,9 +471,10 @@ int main() {
     thread body_detection_thread(bodyDetection);
    
 
-
+    // 
     // Wait for threads to finish
     hardware_thread.join();
+    client_Thread.join();
     capture_thread.join();
     analysis_thread.join();
     body_detection_thread.join();
