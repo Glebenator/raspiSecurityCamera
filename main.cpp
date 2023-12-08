@@ -23,6 +23,9 @@ queue<Mat> motion_frames_queue;
 CascadeClassifier fullbody_cascade;
 
 atomic<bool> body_detected{false};
+atomic<bool> start_analysis{false};
+atomic<bool> start_body_detection{false};
+
 const int DETECTION_THRESHOLD = 2;
 const double MIN_CONTOUR_AREA = 500;
 
@@ -43,6 +46,11 @@ void bodyDetection() {
     namedWindow("Body Detected - Live", WINDOW_AUTOSIZE); // Create the body detection display window
 
     while (true) {
+         if (!start_body_detection) {
+            if (finished) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
         unique_lock<mutex> lock(motion_frames_mutex);
         if (motion_frames_queue.empty()) {
             if (finished) {
@@ -138,6 +146,11 @@ void analysis() {
     int frameCounter = 0;  // Use a frame counter instead of a separate queue
 
     while (true) {
+        if (!start_analysis) {
+            if (finished) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
         // We might be waiting on the condition variable for new frames to process.
         unique_lock<mutex> lock(frame_mutex);
         frame_cond.wait(lock, [] { return !frame_queue.empty() || finished; });
@@ -206,7 +219,7 @@ void captureVideo() {
     while (true) {
         capture.read(frame);
         unique_lock<mutex> lock(frame_mutex);
-        frame_queue.push(frame.clone());
+        frame_queeu.push(frame.clone());
         lock.unlock();
         frame_cond.notify_one();
         if (waitKey(1) >= 0)
@@ -241,35 +254,25 @@ void displayVideo() {
     destroyWindow("Capture - Live");
 }
 
-int main() {
-    if (!fullbody_cascade.load("/home/pi/opencv/data/haarcascades/haarcascade_frontalface_alt.xml")) {
-    cerr << "--(!)Error loading full body cascade\n";
-    return -1;
-    }
+void buttonThreadFunction() {
     exportAllGpioPin();
     openFiles();
-
-    ButtonState buttonState = Idle;
-     bool buttonPressedAgain = false;
     cout << "starting! " << endl;
+    ButtonState buttonState = Idle;
+    bool buttonPressedAgain = false;
 
-
-    // Start video capture thread
-    thread capture_thread(captureVideo);
-    // Start analysis thread
-    thread analysis_thread(analysis);
-     // start body detection thread
-    thread body_detection_thread(bodyDetection);
-    // Start display thread
-    thread display_thread(displayVideo);
-
-   while(true){
-   int buttonValue = returnButtonValue();
+    while (true) {
+        int buttonValue = returnButtonValue();
+        
         switch (buttonState) {
             case Idle:
                 if (buttonValue == 1) {
                     buttonState = ButtonPressed;
                     buttonPressedAgain = false;
+                    
+                    // Signal to start analysis and body detection
+                    start_analysis = true;
+                    start_body_detection = true;
                 }
                 break;
 
@@ -281,27 +284,84 @@ int main() {
 
             case Flashing:
                 // Flash LEDs and buzzer
+                
                 flashingRed(50000);
-                if (body_detected.load()){
-                    flashingBuzzer(50000);
-                    // sleep(5);
-                    body_detected.store(false);
-                }
+                flashingBuzzer(50000);
 
-                // Check if the button is pressed again to stop flashing
-                if (buttonValue == 1) {
-                    buttonPressedAgain = true;
-                }
-
-                // Check if the button is released to go back to Idle
+                // Reset and stop analysis and detection when going back to idle state
                 if (buttonValue == 0 && buttonPressedAgain) {
                     buttonState = Idle;
+                    
+                    // Signal to stop analysis and body detection
+                    start_analysis = false;
+                    start_body_detection = false;
                 }
                 break;
         }
-   }
+
+        // Include some delay to prevent a busy loop
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
+int main() {
+    if (!fullbody_cascade.load("/home/pi/opencv/data/haarcascades/haarcascade_frontalface_alt.xml")) {
+    cerr << "--(!)Error loading full body cascade\n";
+    return -1;
+    }
+    
+
+   // Start hardware thread
+    thread hardware_thread(buttonThreadFunction);
+    // Start video capture thread
+    thread capture_thread(captureVideo);
+    // Start analysis thread
+    thread analysis_thread(analysis);
+     // start body detection thread
+    thread body_detection_thread(bodyDetection);
+    // Start display thread
+    thread display_thread(displayVideo);
+
+//    while(true){
+//    int buttonValue = returnButtonValue();
+//         switch (buttonState) {
+//             case Idle:
+//                 if (buttonValue == 1) {
+//                     buttonState = ButtonPressed;
+//                     buttonPressedAgain = false;
+//                 }
+//                 break;
+
+//             case ButtonPressed:
+//                 if (buttonValue == 0) {
+//                     buttonState = Flashing;
+//                 }
+//                 break;
+
+//             case Flashing:
+//                 // Flash LEDs and buzzer
+//                 flashingRed(50000);
+//                 if (body_detected.load()){
+//                     flashingBuzzer(50000);
+//                     // sleep(5);
+//                     body_detected.store(false);
+//                 }
+
+//                 // Check if the button is pressed again to stop flashing
+//                 if (buttonValue == 1) {
+//                     buttonPressedAgain = true;
+//                 }
+
+//                 // Check if the button is released to go back to Idle
+//                 if (buttonValue == 0 && buttonPressedAgain) {
+//                     buttonState = Idle;
+//                 }
+//                 break;
+//         }
+//    }
 
     // Wait for threads to finish
+    hardware_thread.join();
     capture_thread.join();
     analysis_thread.join();
     body_detection_thread.join();
